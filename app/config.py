@@ -1,3 +1,21 @@
+"""Environment-backed application settings with secure-by-default validation.
+
+This module centralizes runtime configuration for the MeTube backend. The
+``Settings`` dataclass is responsible for reading environment variables,
+resolving derived values, validating container-facing paths, and applying the
+security policy around sensitive yt-dlp options.
+
+The configuration flow is intentionally strict:
+- unsupported or malformed values fail fast at startup;
+- runtime-only secrets stay out of the browser-facing config surface;
+- sensitive inline ``YTDL_OPTIONS`` are rejected in favor of file-based config;
+- filesystem and TLS requirements are validated before the application starts.
+
+``BASE_DIR`` is no longer a supported environment variable. The application
+root is derived from the package location, and ``app_root`` exists only as an
+internal/testing override for controlled environments such as unit tests.
+"""
+
 from __future__ import annotations
 
 import json
@@ -17,6 +35,27 @@ class SettingsError(ValueError):
 
 @dataclass(frozen=True)
 class Settings:
+    """Typed runtime settings used by the backend and bootstrap layer.
+
+    Public-facing values such as ``CUSTOM_DIRS`` or ``PUBLIC_HOST_URL`` can be
+    selectively exposed to browser clients through :meth:`frontend_safe`.
+    Internal-only values such as filesystem paths, TLS files, merged yt-dlp
+    options, and runtime overrides remain server-side.
+
+    The dataclass stores both environment-backed values and derived runtime
+    fields:
+    - path fields are resolved to absolute, validated locations;
+    - derived fields such as ``UI_DIST_DIR`` and ``COOKIES_PATH`` are computed
+      from the validated base settings;
+    - ``_runtime_overrides`` is reserved for values created by the application
+      itself at runtime, for example the uploaded cookies file.
+
+    Inline ``YTDL_OPTIONS`` are intentionally restricted. Sensitive options
+    related to credentials, cookies, or local secret files must come from
+    ``YTDL_OPTIONS_FILE`` or a runtime override, not directly from the process
+    environment.
+    """
+
     DOWNLOAD_DIR: str
     AUDIO_DOWNLOAD_DIR: str
     TEMP_DIR: str
@@ -136,6 +175,12 @@ class Settings:
         *,
         app_root: Path | None = None,
     ) -> "Settings":
+        """Build a validated ``Settings`` instance from environment variables.
+
+        ``env`` defaults to ``os.environ``. ``app_root`` is an internal/testing
+        override used to point the settings loader at a temporary project root;
+        it is not part of the public runtime environment contract.
+        """
         source = os.environ if env is None else env
         raw = cls._resolve_defaults(source)
         resolved_app_root = (app_root or Path(__file__).resolve().parent.parent).resolve()
@@ -220,17 +265,27 @@ class Settings:
         return settings
 
     def frontend_safe(self) -> dict[str, Any]:
+        """Return the small allowlisted subset of settings safe for the browser."""
         return {key: getattr(self, key) for key in self._FRONTEND_KEYS}
 
     def set_runtime_override(self, key: str, value: Any) -> None:
+        """Inject an application-generated override into the effective yt-dlp options."""
         self._runtime_overrides[key] = value
         self.YTDL_OPTIONS[key] = value
 
     def remove_runtime_override(self, key: str) -> None:
+        """Remove a previously injected runtime override from the effective options."""
         self._runtime_overrides.pop(key, None)
         self.YTDL_OPTIONS.pop(key, None)
 
     def load_ytdl_options(self) -> tuple[bool, str]:
+        """Rebuild the effective yt-dlp options from env, file, and runtime state.
+
+        Precedence is:
+        1. inline non-sensitive ``YTDL_OPTIONS``
+        2. ``YTDL_OPTIONS_FILE`` contents
+        3. runtime overrides created by the application itself
+        """
         options = dict(self._inline_ytdl_options)
         if self.YTDL_OPTIONS_FILE:
             path = Path(self.YTDL_OPTIONS_FILE)
@@ -253,6 +308,7 @@ class Settings:
 
     @classmethod
     def _resolve_defaults(cls, env: Mapping[str, str]) -> dict[str, str]:
+        """Resolve raw env values and expand ``%%OTHER_KEY`` references once."""
         values = {key: str(env.get(key, default)) for key, default in cls._DEFAULTS.items()}
         for key, value in list(values.items()):
             if value.startswith("%%"):
@@ -261,12 +317,14 @@ class Settings:
 
     @staticmethod
     def _parse_bool(name: str, value: str) -> bool:
+        """Parse the project's accepted boolean spellings and fail on ambiguity."""
         if value not in ("true", "false", "True", "False", "on", "off", "1", "0"):
             raise SettingsError(f'Environment variable "{name}" is set to a non-boolean value "{value}"')
         return value in ("true", "True", "on", "1")
 
     @staticmethod
     def _parse_int(name: str, value: str, *, minimum: int | None = None) -> int:
+        """Parse an integer setting and optionally enforce a minimum value."""
         try:
             parsed = int(value)
         except (TypeError, ValueError) as exc:
@@ -277,6 +335,7 @@ class Settings:
 
     @staticmethod
     def _parse_non_empty(name: str, value: str) -> str:
+        """Require a non-empty string for settings that cannot be blank."""
         stripped = str(value).strip()
         if not stripped:
             raise SettingsError(f'Environment variable "{name}" must not be empty')
@@ -284,6 +343,7 @@ class Settings:
 
     @classmethod
     def _parse_loglevel(cls, value: str) -> str:
+        """Validate that the configured log level maps to a known logging constant."""
         parsed = getattr(logging, str(value).upper(), None)
         if not isinstance(parsed, int):
             raise SettingsError(f'Environment variable "LOGLEVEL" is invalid: "{value}"')
@@ -291,6 +351,7 @@ class Settings:
 
     @classmethod
     def _parse_theme(cls, value: str) -> str:
+        """Restrict the default theme to the frontend-supported identifiers."""
         theme = str(value).strip().lower()
         if theme not in cls._VALID_THEMES:
             raise SettingsError('Environment variable "DEFAULT_THEME" must be one of auto, dark, light')
@@ -298,6 +359,7 @@ class Settings:
 
     @staticmethod
     def _normalize_url_prefix(value: str) -> str:
+        """Normalize the deployment prefix to the app's canonical slash form."""
         prefix = str(value or "").strip()
         if not prefix:
             return "/"
@@ -309,6 +371,7 @@ class Settings:
 
     @staticmethod
     def _resolve_path(value: str, *, base_dir: Path | None = None) -> Path:
+        """Resolve a path against the current working directory or a provided base."""
         path = Path(value).expanduser()
         if not path.is_absolute():
             anchor = base_dir or Path.cwd()
@@ -317,6 +380,7 @@ class Settings:
 
     @classmethod
     def _resolve_directory(cls, value: str, name: str) -> Path:
+        """Resolve a directory and require it to exist with read/write/execute access."""
         path = cls._resolve_path(value)
         if not path.exists():
             raise SettingsError(f'Configured path for "{name}" does not exist: {path}')
@@ -334,6 +398,7 @@ class Settings:
         *,
         base_dir: Path | None = None,
     ) -> Path | None:
+        """Resolve an optional file path and validate readability when provided."""
         if not str(value).strip():
             return None
         path = cls._resolve_path(value, base_dir=base_dir)
@@ -347,6 +412,7 @@ class Settings:
 
     @staticmethod
     def _parse_ytdl_options(value: str) -> dict[str, Any]:
+        """Parse ``YTDL_OPTIONS`` as a JSON object."""
         try:
             options = json.loads(value or "{}")
         except json.JSONDecodeError as exc:
@@ -357,6 +423,7 @@ class Settings:
 
     @classmethod
     def _validate_inline_ytdl_options(cls, options: Mapping[str, Any]) -> None:
+        """Reject inline yt-dlp options that can carry secrets or local file references."""
         sensitive = sorted(cls._SENSITIVE_INLINE_YTDL_KEYS.intersection(options.keys()))
         if sensitive:
             raise SettingsError(
@@ -366,11 +433,13 @@ class Settings:
 
     @staticmethod
     def _validate_https(enabled: bool, certfile: Path | None, keyfile: Path | None) -> None:
+        """Require both certificate and key when HTTPS mode is enabled."""
         if enabled and (certfile is None or keyfile is None):
             raise SettingsError('HTTPS requires both "CERTFILE" and "KEYFILE"')
 
     @staticmethod
     def _validate_ui_dist(ui_dist_dir: Path) -> None:
+        """Fail fast if the built frontend assets are missing from the expected location."""
         index_file = ui_dist_dir / "index.html"
         if not index_file.exists():
             raise SettingsError(
@@ -380,6 +449,7 @@ class Settings:
 
     @classmethod
     def _parse_trusted_origins(cls, value: str) -> tuple[str, ...]:
+        """Parse and normalize trusted CORS origins from CSV or JSON array input."""
         raw_items: list[str]
         stripped = str(value).strip()
         if not stripped:
