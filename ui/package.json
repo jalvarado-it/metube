@@ -47,17 +47,17 @@
     "zone.js": "0.15.0"
   },
   "devDependencies": {
-    "@angular-eslint/builder": "21.1.0",
-    "@angular/build": "^21.2.3",
-    "@angular/cli": "^21.2.3",
+    "@angular-eslint/builder": "21.3.1",
+    "@angular/build": "^21.2.5",
+    "@angular/cli": "^21.2.5",
     "@angular/compiler-cli": "^21.2.5",
     "@angular/localize": "^21.2.5",
     "@eslint/js": "^9.39.4",
-    "angular-eslint": "21.1.0",
-    "eslint": "^9.39.4",
+    "angular-eslint": "21.3.1",
+    "eslint": "^10.1.0",
     "jsdom": "^27.4.0",
     "typescript": "~5.9.3",
-    "typescript-eslint": "8.47.0",
+    "typescript-eslint": "8.58.0",
     "vitest": "^4.1.0"
   }
 }
