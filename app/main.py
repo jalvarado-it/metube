@@ -22,7 +22,8 @@ from watchfiles import Change, DefaultFilter, awatch
 from yarl import URL
 
 from config import Settings, SettingsError
-from ytdl import Download, DownloadQueue, DownloadQueueNotifier
+from notifier import SocketIONotifier
+from ytdl import Download, DownloadQueue
 from yt_dlp.version import __version__ as yt_dlp_version
 
 log = logging.getLogger("main")
@@ -136,31 +137,6 @@ def _migrate_legacy_request(post: dict) -> dict:
             post["quality"] = old_quality
 
     return post
-
-
-class Notifier(DownloadQueueNotifier):
-    def __init__(self, app: web.Application):
-        self.app = app
-
-    async def added(self, dl):
-        log.info("Notifier: Download added - %s", dl.title)
-        await _socketio_from(self.app).emit("added", serializer.encode(dl))
-
-    async def updated(self, dl):
-        log.debug("Notifier: Download updated - %s", dl.title)
-        await _socketio_from(self.app).emit("updated", serializer.encode(dl))
-
-    async def completed(self, dl):
-        log.info("Notifier: Download completed - %s", dl.title)
-        await _socketio_from(self.app).emit("completed", serializer.encode(dl))
-
-    async def canceled(self, identifier):
-        log.info("Notifier: Download canceled - %s", identifier)
-        await _socketio_from(self.app).emit("canceled", serializer.encode(identifier))
-
-    async def cleared(self, identifier):
-        log.info("Notifier: Download cleared - %s", identifier)
-        await _socketio_from(self.app).emit("cleared", serializer.encode(identifier))
 
 
 class FileOpsFilter(DefaultFilter):
@@ -723,7 +699,10 @@ def create_app(settings: Settings | None = None) -> web.Application:
     sio = socketio.AsyncServer(cors_allowed_origins=socket_cors_origins)
     sio.attach(app, socketio_path=settings.URL_PREFIX + "socket.io")
     app[SOCKETIO_KEY] = sio
-    app[DQUEUE_KEY] = DownloadQueue(settings, Notifier(app))
+    app[DQUEUE_KEY] = DownloadQueue(
+        settings,
+        SocketIONotifier(sio=sio, serializer=serializer, logger=log),
+    )
 
     register_socketio_handlers(app, sio)
     register_routes(app)
