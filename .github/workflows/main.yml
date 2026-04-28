@@ -32,7 +32,7 @@ jobs:
         env:
           CI: true
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
       - name: Install Python dependencies
         run: uv sync --frozen --group dev
       - name: Run backend smoke checks
@@ -40,7 +40,7 @@ jobs:
       - name: Run backend tests
         run: uv run pytest app/tests/
       - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -209,7 +209,7 @@ jobs:
             git push origin ":refs/tags/$TAG_NAME" || true
           fi
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.date.outputs.date }}
           name: Release ${{ steps.date.outputs.date }}
